@@ -37,7 +37,7 @@ nrsi  |>
         strip.background = element_blank(),
         panel.spacing = unit(0, "lines"))
   
-
+ggsave("figs/density_plot.png", dpi = 800, height = 5, width = 5)
 
 nrsi |>  
   filter(protection !=  "Fishing Refuge" | !year < 2006) |> 
