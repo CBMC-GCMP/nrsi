@@ -1,6 +1,8 @@
 library(tidyverse)
 
 
+# Loading data ------------------------------------------------------------
+
 fish <- read_rds("data/rocky_reef_fish_database.RDS") 
 
 
@@ -21,6 +23,8 @@ nrsi <- fish |>
   filter(!is.na(nrsi)) # Some are probably wrong
 
 
+# Density plot ------------------------------------------------------------
+
 nrsi  |> 
   group_by(protection) |> 
   mutate(median = median(nrsi)) |> 
@@ -38,6 +42,10 @@ nrsi  |>
         panel.spacing = unit(0, "lines"))
   
 ggsave("figs/density_plot.png", dpi = 800, height = 5, width = 5)
+
+
+# Time trends -------------------------------------------------------------
+
 
 nrsi |>  
   filter(protection !=  "Fishing Refuge" | !year < 2006) |> 
@@ -60,6 +68,11 @@ nrsi |>
         legend.position = "top")
 
 ggsave("figs/time_trends.png", height = 8, width = 8, dpi = 800)
+
+
+
+
+# Map of the study area ---------------------------------------------------
 
 nrsi_sf <- sf::st_as_sf(nrsi, coords = c("longitude", "latitude"), crs = 4326)
 
@@ -96,11 +109,6 @@ nrsi_sf |>
         panel.grid = element_line(color = "gray90", linetype = 2), 
         panel.border = element_rect(fill = NA, color = "black")) 
 
-
-
-
-
-
 nrsi_sf |> 
   ggplot() +
   geom_sf(data = dafishr::mx_shape) +
@@ -128,3 +136,55 @@ nrsi_sf |>
         panel.border = element_rect(fill = NA, color = "black")) 
 
 ggsave("figs/study_area.png", height = 5, width = 5, dpi = 800)
+
+
+
+
+# Statistical comparisons -------------------------------------------------
+
+m0 <- glm(nrsi~protection, data = nrsi)
+
+
+report::report(m0)
+
+
+
+
+
+# Reef NRSI trends analysis -----------------------------------------------
+
+library(broom) # to change model results into data frame
+
+
+
+## dataset to model
+tomode <- nrsi |> 
+  group_by(id_reef) |> 
+  mutate(n_years = n_distinct(year)) |> # Getting the number of years
+  filter(n_years > 3) 
+
+
+models <- tomode |> 
+  group_by(id_reef, protection) |> 
+  do(tidy(lm(nrsi ~ year, data = .))) |> 
+  filter(term == "year") |> 
+  mutate(trend = ifelse(estimate > 0, "Increasing", "Decreasing"))
+
+models |> 
+  group_by(protection) |> 
+  count(trend) |> 
+  mutate(perc = round((n/sum(n)) *100))
+
+models |> 
+  group_by(protection) |> 
+  mutate(mean_est = mean(estimate)) |> 
+  ggplot(aes(x = estimate, y = reorder(protection, -mean_est))) +
+  geom_line() +
+  geom_point(aes(x=mean_est)) +
+  labs(x="NRSI variation", y = "") +
+  xlim(-0.2, 0.2) +
+  geom_vline(aes(xintercept = 0), linetype = 2) +
+  theme_bw() +
+  theme(legend.position = "", 
+        strip.background = element_blank(),
+        panel.spacing = unit(0, "lines"))

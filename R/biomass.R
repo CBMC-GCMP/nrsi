@@ -29,8 +29,9 @@ fish_TL <-
   spp_traits <- merge(fish_TL, fish_ab, by="Species")
   
   
+  
   spp2 <- merge(spp, spp_traits, by.x = "species", by.y = "Species") |> 
-      group_by(genus) |> 
+    group_by(genus) |> 
     mutate(
       mntroph = mean(DietTroph, na.rm = T),
       a_mean = mean(a, na.rm = T),
@@ -49,8 +50,7 @@ fish_TL <-
   db <- merge(database, spp2, by="species", all.x = T) |> 
     mutate(a= as.numeric(a), 
            b= as.numeric(b), 
-           Biomass = (abundance * a * (size^b)))
-    
+           biomass = (quantity * a * (size^b)))
   
 
   
