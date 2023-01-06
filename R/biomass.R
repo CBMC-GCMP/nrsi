@@ -28,8 +28,6 @@ fish_TL <-
   
   spp_traits <- merge(fish_TL, fish_ab, by="Species")
   
-  
-  
   spp2 <- merge(spp, spp_traits, by.x = "species", by.y = "Species") |> 
     group_by(genus) |> 
     mutate(
@@ -52,6 +50,6 @@ fish_TL <-
            b= as.numeric(b), 
            biomass = (quantity * a * (size^b)))
   
-
+  db
   
 }
