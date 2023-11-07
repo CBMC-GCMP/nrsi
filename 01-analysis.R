@@ -3,24 +3,23 @@ library(tidyverse)
 
 # Loading data ------------------------------------------------------------
 
-fish <- read_rds("data/rocky_reef_fish_database.RDS") 
-
+fish <- read_csv("data/rocky_reef_fish_database.csv") 
 
 nrsi <- fish |> 
-  mutate(levels = case_when(
-    str_detect(trophic_level_f, "2-2.5|4-4.5") ~ "TPB", 
-    TRUE ~ "LTLs"
-  )) |> 
-  group_by(year, region, id_reef, protection, latitude, longitude, depth2, levels, transect) |> 
-  summarise(biomass = sum(biomass)) |> 
-  group_by(year, region, id_reef, levels, latitude, longitude, protection) |> 
+  mutate(index_levels = case_when(
+    str_detect(trophic_level_f, "2-2.5|4-4.5") ~ "ATL", 
+    TRUE ~ "CTL"
+  ), 
+  protection = factor(protection, levels = c("Not Protected", "Lightly Protected", "Fishing Refuge", "Fully Protected"))) |> 
+  group_by(year, id_reef, protection, latitude, longitude, depth2, index_levels, transect) |> 
+  summarise(biomass = sum(biomass, na.rm = T)) |> 
+  group_by(year, id_reef, index_levels, latitude, longitude, protection) |> 
   summarise(biomass = mean(biomass, na.rm = T)) |> 
-  group_by(year, region, id_reef, latitude, longitude, protection) |> 
-  mutate(rel_biomass = (biomass/sum(biomass))*100) |> 
-  select(-biomass) |> 
-  pivot_wider(names_from = levels, values_from = rel_biomass) |> 
-  mutate(nrsi = (TPB-LTLs)/(TPB+LTLs)) |> 
-  filter(!is.na(nrsi)) # Some are probably wrong
+  group_by(year, id_reef, latitude, longitude, protection) |> 
+  mutate(rel_biomass = (biomass/sum(biomass, na.rm = T))*100) |> 
+  select(-biomass) %>% 
+  pivot_wider(names_from = index_levels, values_from = rel_biomass) |> 
+  mutate(nrsi = (ATL-CTL)/(ATL+CTL)) 
 
 
 # Density plot ------------------------------------------------------------
@@ -48,10 +47,7 @@ ggsave("figs/density_plot.png", dpi = 800, height = 5, width = 5)
 
 
 nrsi |>  
-  filter(protection !=  "Fishing Refuge" | !year < 2006) |> 
-  group_by(region) |> 
-  mutate(n_years = n_distinct(year)) |> 
-  filter(n_years > 5) |> 
+  filter(protection !=  "Fishing Refuge" | !year < 2006) |> # eliminating unclear site
   mutate(nrsiF = cut(nrsi, breaks=c(-1, -0.75, -0.25, 0, 0.25, 0.75, 1), include.lowest = TRUE)) |> 
   mutate(nrsiF = factor(nrsiF, levels = c('[-1,-0.75]', '(-0.75,-0.25]', '(-0.25,0]', '(0,0.25]', '(0.25,0.75]', '(0.75,1]'),
                        labels = c("Very Poor", "Poor",  "Fair", "Fair",  "High", "Very high"))) |> 
@@ -102,7 +98,6 @@ nrsi_sf |>
       line_col = "grey20",
       text_family = "ArcherPro Book"
     )) +
-  facet_wrap(~protection) |> 
   theme(legend.position = "right", 
         legend.key = element_blank(),
         panel.background = element_rect(fill = NA), 
@@ -112,7 +107,8 @@ nrsi_sf |>
 nrsi_sf |> 
   ggplot() +
   geom_sf(data = dafishr::mx_shape) +
-  geom_sf() +
+  geom_sf(aes(col = protection)) +
+  scale_color_manual(values = c("firebrick", "aquamarine", "lightgreen", "darkgreen")) +
   coord_sf(xlim = c(min(nrsi$longitude)-1, max(nrsi$longitude)+1),
            ylim = c(min(nrsi$latitude)-0.1, max(nrsi$latitude))+0.1) +
   labs(col = "NRSI", subtitle = "All monitored sites in the program") +
@@ -135,7 +131,7 @@ nrsi_sf |>
         panel.grid = element_line(color = "gray90", linetype = 2), 
         panel.border = element_rect(fill = NA, color = "black")) 
 
-ggsave("figs/study_area.png", height = 5, width = 5, dpi = 800)
+ggsave("figs/study_area.png", height = 6, width = 8, dpi = 800)
 
 
 
@@ -148,13 +144,9 @@ m0 <- glm(nrsi~protection, data = nrsi)
 report::report(m0)
 
 
-
-
-
 # Reef NRSI trends analysis -----------------------------------------------
 
 library(broom) # to change model results into data frame
-
 
 
 ## dataset to model
