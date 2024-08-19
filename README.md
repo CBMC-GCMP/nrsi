@@ -15,10 +15,17 @@ The NRSI is designed to be a rapid, scalable, and standardized tool for evaluati
 
 ## Installation
 
-To replicate the analysis and generate the figures, you will need to have R installed on your system. The `tidyverse` R package is required. You can install it by running the following command in your R console:
+To replicate the analysis and generate the figures, you will need to have R installed on your system. The following R packages are required:
+- `sf`
+- `patchwork`
+- `moments`
+- `ggridges`
+- `dafishr`
+
+You can install it by running the following command in your R console:
 
 ```R
-install.packages(c("tidyverse"))
+install.packages(c("tidyverse", "sf", "patchwork", "moments", "ggridges", "dafishr"))
 ```
 
 ## Acknowledgments
