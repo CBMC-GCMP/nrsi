@@ -1,0 +1,604 @@
+---
+title: "Supplementary Materials I"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+    theme: united
+    toc: true
+    toc_float: true
+knitr:
+  opts_chunk:
+    echo: true
+    message: false
+    warning: false
+    error: false
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(sf)
+library(patchwork)
+library(moments)
+library(ggridges)
+library(dafishr)
+
+# Loading data ------------------------------------------------------------
+fish <- read_csv("data/fish_database_submission.csv")
+```
+
+First we provide an interactive map of the sites location by protection level to have a better view of Figure 2 in main manuscript.
+
+```{r}
+tomap <- fish %>% 
+  group_by(protection, reef) %>% 
+  summarise(latitude = mean(latitude), longitude = mean(longitude)) %>% 
+  st_as_sf(., coords = c("longitude", "latitude"), crs = 4326) 
+mapview::mapview(tomap, zcol = "protection")
+
+```
+
+Biomass increased in Cabo Pulmo since the 1998 data baseline. Thus, it provides a good study case to understand how the NRSI works. First, we extract only sites that were monitored in 1998 and 1999 and in the following years from 2009 onward. 
+
+```{r}
+
+cp_sites <- fish %>% 
+  filter(region == "Cabo Pulmo") %>% 
+  filter(year < 2001) %>% 
+  pull(reef) %>% unique()
+
+
+```
+
+Then we compare those sites with others from the La Paz region, which are under a Lighly Protected area.
+
+```{r}
+
+
+more_sites <- c(cp_sites, "ESPIRITU_SANTO_ISLOTES_NORTE", "ESPIRITU_SANTO_BALLENA", "ESPIRITU_SANTO_PUNTA_LOBOS")
+
+library(Hmisc)
+
+# Calculate the mean biomass and standard error
+summary_data <- fish %>% 
+  filter(reef %in% more_sites) %>% 
+  group_by(year, region, reef, depth2, transect) %>% 
+  summarise(biomass = sum(biomass)) %>% 
+  group_by(year, region, reef) %>% 
+  summarise(
+    biomass_mean = mean(biomass),
+    biomass_se = sd(biomass) / sqrt(n())  # Standard error
+  )
+
+# Plot with error bars
+ggplot(summary_data, aes(x=year, y=biomass_mean, col=reef, group=reef)) +
+  geom_point() + 
+  geom_errorbar(aes(ymin=biomass_mean - biomass_se, ymax=biomass_mean + biomass_se), width=0.2) +
+  facet_grid(~region) +
+  labs(y = "Mean Biomass", title = "Mean Biomass with Standard Error")
+
+
+```
+
+Cabo Pulmo sites, which have shown significant recovery in biomass, exhibit greater variability. This is due to the presence of larger fish schools that create substantial variation within transects.
+
+Why are not all sites in Cabo Pulmo recovering to similarly high levels? The issue lies in the scale at which we assess regional health. The location of surveys, such as more or less exposed areas, becomes crucial. This variability is important to consider. Consequently, biomass distributions are skewed to the left, and recovery is reflected in the right tail of the biomass distribution.
+
+Let's now see how the index works in Cabo Pulmo and La Paz. 
+
+```{r}
+# Calculate the mean biomass and standard error
+
+nrsi <-  fish %>% 
+    filter(reef %in% more_sites) %>% 
+  mutate(index_levels = case_when(
+    str_detect(trophic_level_f, "4-4.5") ~ "UTL", 
+    str_detect(trophic_level_f, "2-2.5") ~ "LTL", 
+    TRUE ~ "CTL"
+  ), 
+  protection = factor(protection, levels = c("Not Protected", "Lightly Protected", "Fish Refuge", "Fully Protected"))) %>% 
+  mutate(degree = round(latitude)) %>% 
+  group_by(year, reef, region, degree, latitude, longitude, depth2, index_levels, transect) %>% 
+  summarise(biomass = sum(biomass, na.rm = TRUE)) %>% 
+  group_by(year, reef, region, index_levels, degree, latitude, longitude) %>% 
+  summarise(biomass = mean(biomass, na.rm = TRUE)) %>% 
+  group_by(year, reef, region, degree, latitude, longitude) %>% 
+  mutate(rel_biomass = (biomass / sum(biomass, na.rm = TRUE)) * 100) %>% 
+  select(-biomass) %>%
+  pivot_wider(names_from = index_levels, values_from = rel_biomass) %>%
+  mutate(
+    UTL = if_else(is.na(UTL), 0, UTL),  # Replace NA with 0 for UTL calculations
+    LTL = if_else(is.na(LTL), 0, LTL),  # Replace NA with 0 for LTL calculations
+    CTL = if_else(is.na(CTL), 0, CTL),  # Replace NA with 0 for CTL calculations
+    nrsi = case_when(
+      LTL > UTL + CTL ~ UTL / (UTL + CTL),  # Condition 1: Use only UTL if LTL is greater than UTL + CTL
+      TRUE ~ (UTL + LTL - CTL) / (UTL + LTL + CTL)  # Condition 2: Compute as normal otherwise
+    )
+  ) 
+
+nrsi %>% 
+  group_by(year, region) %>% 
+  summarise(nrsi = mean(nrsi)) %>% 
+  ggplot(aes(x=year, y=nrsi)) +
+  geom_point() +
+    facet_grid(~region) 
+
+```
+
+If we want to compare these two regions, we can use the bootstrapping technique by resampling the averages NRSI values. This way we obtain the following graph: 
+
+```{r}
+
+resample_mean <- function(df, n = 9999) {
+  replicate(n, {
+    sampled <- df[sample(nrow(df), replace = TRUE), ]
+    mean((sampled$nrsi), na.rm = TRUE)
+  })
+}
+
+
+resampled_prod <- nrsi %>%
+  group_by(region) %>%
+  nest() %>%
+  mutate(
+    ResampledMeans = map(data, ~resample_mean(.x)),
+    Median = map_dbl(ResampledMeans, median)
+  ) %>%
+  select(region, ResampledMeans, Median)
+
+
+
+
+toplot <- resampled_prod %>%
+  unnest(ResampledMeans) 
+
+
+ggplot(toplot, aes(x = ResampledMeans, fill = region)) +
+  geom_density(binwidth = 0.1, alpha = 0.7, position = 'identity') +
+  geom_vline(data = resampled_prod, aes(xintercept = Median, color = region), linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Resampled Means by Protection Group",
+       x = "Resampled Means",
+       y = "Frequency")
+```
+
+Or by year: 
+
+```{r}
+
+resample_mean <- function(df, n = 9999) {
+  replicate(n, {
+    sampled <- df[sample(nrow(df), replace = TRUE), ]
+    mean((sampled$nrsi), na.rm = TRUE)
+  })
+}
+
+
+resampled_prod <- nrsi %>%
+  group_by(year, region) %>%
+  nest() %>%
+  mutate(
+    ResampledMeans = map(data, ~resample_mean(.x)),
+    Median = map_dbl(ResampledMeans, median)
+  ) %>%
+  select(region, ResampledMeans, Median)
+
+toplot <- resampled_prod %>%
+  unnest(ResampledMeans) 
+
+ggplot(toplot, aes(y = factor(year), x = Median, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 1) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(x = "NRSI", y = "") +
+  scale_fill_gradientn(colors = c("firebrick", "orange", "gray", "green", "darkgreen"),
+                       values = scales::rescale(c(-1, -0.75, -0.5, 0.5, 0.75, 1)))+
+  xlim(-0.8,0.8) +
+  facet_grid(~region) +
+  theme_bw() +
+  theme(legend.position = "", 
+        
+        axis.text.x = element_text(angle = 90, vjust = .5))  
+```
+
+We can also explore within the Cabo Pulmo area, sites that are inside vs the ones that are outside the protection polygon: 
+
+```{r}
+
+nrsi <-  fish %>% 
+  mutate(index_levels = case_when(
+    str_detect(trophic_level_f, "4-4.5") ~ "UTL", 
+    str_detect(trophic_level_f, "2-2.5") ~ "LTL", 
+    TRUE ~ "CTL"
+  ), 
+  protection = factor(protection, levels = c("Not Protected", "Lightly Protected", "Fish Refuge", "Fully Protected"))) %>% 
+  mutate(degree = round(latitude)) %>% 
+  filter(region == "Cabo Pulmo") %>% 
+  group_by(year, reef, protection, degree, latitude, longitude, depth2, index_levels, transect) %>% 
+  summarise(biomass = sum(biomass, na.rm = TRUE)) %>% 
+  group_by(year, reef, protection, index_levels, degree, latitude, longitude) %>% 
+  summarise(biomass = mean(biomass, na.rm = TRUE)) %>% 
+  group_by(year, reef, protection, degree, latitude, longitude) %>% 
+  mutate(rel_biomass = (biomass / sum(biomass, na.rm = TRUE)) * 100) %>% 
+  select(-biomass) %>%
+  pivot_wider(names_from = index_levels, values_from = rel_biomass) %>%
+  mutate(
+    UTL = if_else(is.na(UTL), 0, UTL),  # Replace NA with 0 for UTL calculations
+    LTL = if_else(is.na(LTL), 0, LTL),  # Replace NA with 0 for LTL calculations
+    CTL = if_else(is.na(CTL), 0, CTL),  # Replace NA with 0 for CTL calculations
+    nrsi = case_when(
+      LTL > UTL + CTL ~ UTL / (UTL + CTL),  # Condition 1: Use only UTL if LTL is greater than UTL + CTL
+      TRUE ~ (UTL + LTL - CTL) / (UTL + LTL + CTL)  # Condition 2: Compute as normal otherwise
+    )
+  ) 
+
+nrsi %>% 
+  select(reef, protection) %>% 
+  unique()
+
+
+resample_mean <- function(df, n = 9999) {
+  replicate(n, {
+    sampled <- df[sample(nrow(df), replace = TRUE), ]
+    mean((sampled$nrsi), na.rm = TRUE)
+  })
+}
+
+
+resampled_prod <- nrsi %>%
+  filter(year > 2015) %>% 
+  group_by(protection) %>%
+  nest() %>%
+  mutate(
+    ResampledMeans = map(data, ~resample_mean(.x)),
+    Median = map_dbl(ResampledMeans, median)
+  ) %>%
+  select(protection, ResampledMeans, Median)
+
+toplot <- resampled_prod %>%
+  unnest(ResampledMeans) 
+
+p1 <- ggplot(toplot, aes(y = protection, x = Median, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 1) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(x = "NRSI", y = "", title = "Cabo Pulmo Region") +
+  scale_fill_gradientn(colors = c("firebrick", "orange", "gray", "green", "darkgreen"),
+                       values = scales::rescale(c(-1, -0.75, -0.5, 0.5, 0.75, 1)))+
+  xlim(-0.8,0.8) +
+  #facet_grid(~protection) +
+  theme_bw() +
+  theme(legend.position = "", 
+        axis.text.x = element_text(angle = 90, vjust = .5))  
+
+p2 <- fish %>% 
+  mutate(protection = factor(protection, levels = c("Not Protected", "Lightly Protected", "Fish Refuge", "Fully Protected"))) %>% 
+  filter(region == "Cabo Pulmo") %>% 
+  select(reef, protection, latitude, longitude) %>% 
+  unique() %>% 
+  st_as_sf(., coords = c("longitude", "latitude"), crs = 4326) %>% 
+  ggplot() +
+  geom_sf(data = dafishr::mx_coastline, fill = NA) +
+  geom_sf(data = dafishr::all_mpas %>% filter(NOMBRE == "Cabo Pulmo"), fill = "gray90", alpha = .4) +
+  geom_sf(aes(col=protection)) +
+  coord_sf(ylim = c(23.3, 23.55), xlim = c(-109.5, -109.3)) +
+  labs(col = "") +
+  theme_bw() +
+  theme(legend.position = "top")
+
+library(patchwork)
+
+p2 + p1 
+
+
+```
+
+
+As there is a different number of reefs between inside and outside the area, we can try random sampling 3 reefs within the park to compare with the 3 outside to see if sampling size actually influence this difference, and we can see that actually the sites have consistently higher NRSI values. 
+
+
+```{r}
+
+set.seed(123)
+
+sampled_fully_protected_reefs <- 
+bind_rows(
+  nrsi %>%
+  ungroup() %>% 
+  filter(protection == "Fully Protected") %>%
+  distinct(reef) %>%
+  sample_n(3) %>%
+  inner_join(nrsi, by = "reef"),
+  nrsi %>% 
+    filter(protection == "Not Protected")
+)
+
+
+resampled_prod <- sampled_fully_protected_reefs %>%
+  group_by(protection) %>%
+  nest() %>%
+  mutate(
+    ResampledMeans = map(data, ~resample_mean(.x)),
+    Median = map_dbl(ResampledMeans, median)
+  ) %>%
+  select(protection, ResampledMeans, Median)
+
+toplot <- resampled_prod %>%
+  unnest(ResampledMeans) 
+
+p1 <- ggplot(toplot, aes(y = protection, x = Median, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 1) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(x = "NRSI", y = "", title = "Cabo Pulmo Region") +
+  scale_fill_gradientn(colors = c("firebrick", "orange", "gray", "green", "darkgreen"),
+                       values = scales::rescale(c(-1, -0.75, -0.5, 0.5, 0.75, 1)))+
+  xlim(-0.8,0.8) +
+  #facet_grid(~protection) +
+  theme_bw() +
+  theme(legend.position = "", 
+        axis.text.x = element_text(angle = 90, vjust = .5))  
+
+
+
+p2 <- sampled_fully_protected_reefs %>%  
+  st_as_sf(., coords = c("longitude", "latitude"), crs = 4326) %>% 
+  ggplot() +
+  geom_sf(data = dafishr::mx_coastline, fill = NA) +
+  geom_sf(data = dafishr::all_mpas %>% filter(NOMBRE == "Cabo Pulmo"), fill = "gray90", alpha = .4) +
+  geom_sf(aes(col=protection)) +
+  coord_sf(ylim = c(23.3, 23.55), xlim = c(-109.5, -109.3)) +
+  labs(col = "") +
+  theme_bw() +
+  theme(legend.position = "top")
+
+p1+p2
+
+
+
+set.seed(111)
+
+sampled_fully_protected_reefs <- 
+bind_rows(
+  nrsi %>%
+  ungroup() %>% 
+  filter(protection == "Fully Protected") %>%
+  distinct(reef) %>%
+  sample_n(3) %>%
+  inner_join(nrsi, by = "reef"),
+  nrsi %>% 
+    filter(protection == "Not Protected")
+)
+
+
+resampled_prod <- sampled_fully_protected_reefs %>%
+  group_by(protection) %>%
+  nest() %>%
+  mutate(
+    ResampledMeans = map(data, ~resample_mean(.x)),
+    Median = map_dbl(ResampledMeans, median)
+  ) %>%
+  select(protection, ResampledMeans, Median)
+
+toplot <- resampled_prod %>%
+  unnest(ResampledMeans) 
+
+p1 <- ggplot(toplot, aes(y = protection, x = Median, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 1) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(x = "NRSI", y = "", title = "Cabo Pulmo Region") +
+  scale_fill_gradientn(colors = c("firebrick", "orange", "gray", "green", "darkgreen"),
+                       values = scales::rescale(c(-1, -0.75, -0.5, 0.5, 0.75, 1)))+
+  xlim(-0.8,0.8) +
+  #facet_grid(~protection) +
+  theme_bw() +
+  theme(legend.position = "", 
+        axis.text.x = element_text(angle = 90, vjust = .5))  
+
+
+
+p2 <- sampled_fully_protected_reefs %>%  
+  st_as_sf(., coords = c("longitude", "latitude"), crs = 4326) %>% 
+  ggplot() +
+  geom_sf(data = dafishr::mx_coastline, fill = NA) +
+  geom_sf(data = dafishr::all_mpas %>% filter(NOMBRE == "Cabo Pulmo"), fill = "gray90", alpha = .4) +
+  geom_sf(aes(col=protection)) +
+  coord_sf(ylim = c(23.3, 23.55), xlim = c(-109.5, -109.3)) +
+  labs(col = "") +
+  theme_bw() +
+  theme(legend.position = "top")
+
+p1+p2
+
+
+set.seed(341)
+
+sampled_fully_protected_reefs <- 
+bind_rows(
+  nrsi %>%
+  ungroup() %>% 
+  filter(protection == "Fully Protected") %>%
+  distinct(reef) %>%
+  sample_n(3) %>%
+  inner_join(nrsi, by = "reef"),
+  nrsi %>% 
+    filter(protection == "Not Protected")
+)
+
+
+resampled_prod <- sampled_fully_protected_reefs %>%
+  group_by(protection) %>%
+  nest() %>%
+  mutate(
+    ResampledMeans = map(data, ~resample_mean(.x)),
+    Median = map_dbl(ResampledMeans, median)
+  ) %>%
+  select(protection, ResampledMeans, Median)
+
+toplot <- resampled_prod %>%
+  unnest(ResampledMeans) 
+
+p1 <- ggplot(toplot, aes(y = protection, x = Median, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 1) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(x = "NRSI", y = "", title = "Cabo Pulmo Region") +
+  scale_fill_gradientn(colors = c("firebrick", "orange", "gray", "green", "darkgreen"),
+                       values = scales::rescale(c(-1, -0.75, -0.5, 0.5, 0.75, 1)))+
+  xlim(-0.8,0.8) +
+  #facet_grid(~protection) +
+  theme_bw() +
+  theme(legend.position = "", 
+        axis.text.x = element_text(angle = 90, vjust = .5))  
+
+
+
+
+p2 <- sampled_fully_protected_reefs %>%  
+  st_as_sf(., coords = c("longitude", "latitude"), crs = 4326) %>% 
+  ggplot() +
+  geom_sf(data = dafishr::mx_coastline, fill = NA) +
+  geom_sf(data = dafishr::all_mpas %>% filter(NOMBRE == "Cabo Pulmo"), fill = "gray90", alpha = .4) +
+  geom_sf(aes(col=protection)) +
+  coord_sf(ylim = c(23.3, 23.55), xlim = c(-109.5, -109.3)) +
+  labs(col = "") +
+  theme_bw() +
+  theme(legend.position = "top")
+
+p1+p2
+```
+
+
+## NRSI and environmental conditions
+
+We inspect if NRSI is influenced by environmental conditions other than the protection level of the reefs. 
+
+
+
+```{r}
+
+
+#### ANALYSIS OF ENVIORNMENTAL ASSOCIATION WITH NRSI
+fish <- read_csv("data/fish_database_submission.csv")
+
+npp <- read_rds("data/LTEM_reefs_chl_yearly_average.RDS") %>% 
+  select(reef = Reef, year, mean_chl) %>% 
+  group_by(year, reef) %>% 
+  summarise(mean_chl = mean(mean_chl))
+
+sst <- read_rds("data/LTEM_reefs_SST_yearly_average.RDS") %>% 
+  select(reef = Reef, year, mean_sst) %>% 
+  group_by(year, reef) %>% 
+  summarise(mean_sst = mean(mean_sst))
+
+
+nrsi <-  fish %>% 
+  filter(year > 2009) %>% 
+  mutate(index_levels = case_when(
+    str_detect(trophic_level_f, "4-4.5") ~ "UTL", 
+    str_detect(trophic_level_f, "2-2.5") ~ "LTL", 
+    TRUE ~ "CTL"
+  ), 
+  protection = factor(protection, levels = c("Not Protected", "Lightly Protected", "Fishing Refuge", "Fully Protected"))) %>% 
+  mutate(degree = round(latitude)) %>% 
+  group_by(year, region, reef, protection, degree, latitude, longitude, depth2, index_levels, transect) %>% 
+  summarise(biomass = sum(biomass, na.rm = TRUE)) %>% 
+  group_by(year, region, reef, protection, index_levels, degree, latitude, longitude) %>% 
+  summarise(biomass = mean(biomass, na.rm = TRUE)) %>% 
+  group_by(year, region, reef, protection, degree, latitude, longitude) %>% 
+  mutate(rel_biomass = (biomass / sum(biomass, na.rm = TRUE)) * 100) %>% 
+  select(-biomass) %>%
+  pivot_wider(names_from = index_levels, values_from = rel_biomass) %>%
+  mutate(
+    UTL = if_else(is.na(UTL), 0, UTL),  # Replace NA with 0 for UTL calculations
+    LTL = if_else(is.na(LTL), 0, LTL),  # Replace NA with 0 for LTL calculations
+    CTL = if_else(is.na(CTL), 0, CTL),  # Replace NA with 0 for CTL calculations
+    nrsi = case_when(
+      LTL > UTL + CTL ~ UTL / (UTL + CTL),  # Condition 1: Use only UTL if LTL is greater than UTL + CTL
+      TRUE ~ (UTL + LTL - CTL) / (UTL + LTL + CTL)  # Condition 2: Compute as normal otherwise
+    )
+  ) %>% 
+  left_join(., npp, by = c("year", "reef")) %>% 
+  left_join(., sst, by = c("year", "reef")) %>% 
+  filter(!is.na(mean_chl))
+
+nrsi_data <- nrsi %>%
+  mutate(protection = factor(protection)) 
+
+```
+
+First, we run a beta regression model using latitude, sea surface temperature, and chlorophyll a content, all obtained through remote sensing data using year averages. 
+
+```{r}
+
+
+# Load necessary packages
+library(dplyr)
+library(betareg)
+
+# Prepare data
+nrsi_data <- nrsi_data %>%
+  filter(!is.na(mean_sst)) %>%  # Remove rows with NA in mean_sst
+  mutate(protection = as.factor(protection))
+
+nrsi_data$transformed_index = (nrsi_data$nrsi + 1) / 2
+
+nrsi_data <- nrsi_data %>% filter(transformed_index > 0)
+
+# Fit beta regression model including environmental variables
+beta_model <- betareg(transformed_index ~ protection + 
+                        latitude + mean_chl + mean_sst, data = nrsi_data)
+
+# Summary of the model
+summary(beta_model)
+
+
+```
+
+The protection levels (Fully Protected) is singificantly higher and we found no significant effects for environmental parameters except for chlorophyll. 
+
+Such relationship is interesting so we explore it further by plotting NRSI against chla. 
+
+```{r}
+
+nrsi_data %>% 
+  ggplot(aes(x=nrsi, y=mean_chl, col = protection)) +
+  geom_point()
+
+```
+
+
+It is evident that while a relationship seems to exist, it is because Fully Protected are much more common in oligotrophic condition. We can explore this further. 
+
+```{r}
+
+ggplot(nrsi_data, aes(x=nrsi, y=mean_chl, col = protection)) +
+  geom_point() +
+  facet_grid(~protection) +
+  geom_smooth(method = "lm")
+
+```
+
+
+There is a significant difference between chla values and protection levels, particularly for Fully Protected areas. 
+
+```{r}
+
+anova_result <- aov(mean_chl ~ protection, data = nrsi_data)
+summary(anova_result)
+# Perform Tukey's HSD test
+tukey_results <- TukeyHSD(anova_result)
+
+# View results
+print(tukey_results)
+
+# Summary statistics for mean_chl by protection level
+summary_stats <- nrsi_data %>%
+  group_by(protection) %>%
+  summarise(
+    mean_mean_chl = mean(mean_chl, na.rm = TRUE),
+    median_mean_chl = median(mean_chl, na.rm = TRUE),
+    sd_mean_chl = sd(mean_chl, na.rm = TRUE),
+    n = n()
+  )
+
+# Display summary statistics
+summary_stats
+```
+
+This suggest that the significant effect of chla is mostly due to the spatial position of fully protected areas and not necessarily to the influence of chla to the NRSI. 
